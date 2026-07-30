@@ -1,10 +1,19 @@
 # Hildebrand Glow (Bright App) Integration for Home Assistant
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub Release](https://img.shields.io/github/v/release/McDon22/hildebrand-glow-ha)](https://github.com/McDon22/hildebrand-glow-ha/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A Home Assistant custom integration for UK SMETS2 smart meters using the Hildebrand Glow / Bright app API.
+
+## About this fork
+
+This is a fork of [McDon22/hildebrand-glow-ha](https://github.com/McDon22/hildebrand-glow-ha) with three fixes to how the integration reports data to the Energy dashboard (also submitted upstream as [PR #12](https://github.com/McDon22/hildebrand-glow-ha/pull/12)):
+
+1. **"No data" / permanently zero sensors** -- the integration only ever queried "today", which Glowmarkt's API never has real data for (it has a documented ~24-48h processing delay). Now walks back to the most recent day that actually has data.
+2. **Energy dashboard silently undercounting usage** -- the consumption sensors used `state_class: total_increasing` against a value that isn't a real running total, which could under-report multi-day totals. Now backed by a genuine persisted cumulative counter.
+3. **Each day shown as one artificial spike instead of its real hourly shape** -- the dashboard's hourly chart now gets real hour-by-hour usage (Glowmarkt already provides 30-minute interval data), including a one-time backfill of the last 7 days on first install.
+
+If you just want the stock integration, use the [upstream repo](https://github.com/McDon22/hildebrand-glow-ha) instead.
 
 ## Features
 
@@ -39,13 +48,13 @@ A Home Assistant custom integration for UK SMETS2 smart meters using the Hildebr
 
 1. Open HACS in Home Assistant
 2. Click the three dots menu → **Custom repositories**
-3. Add `https://github.com/McDon22/hildebrand-glow-ha` as an **Integration**
+3. Add `https://github.com/PixelShorts/hildebrand-glow-ha` as an **Integration**
 4. Search for "Hildebrand Glow" and click **Download**
 5. Restart Home Assistant
 
 ### Manual Installation
 
-1. Download the latest release from [GitHub](https://github.com/McDon22/hildebrand-glow-ha/releases)
+1. Download this repository as a zip from [GitHub](https://github.com/PixelShorts/hildebrand-glow-ha)
 2. Extract and copy the `custom_components/hildebrand_glow` folder to your Home Assistant `config/custom_components/` directory
 3. Restart Home Assistant
 
@@ -80,7 +89,7 @@ To use with the Energy Dashboard:
 
 ## Data Availability
 
-**Important**: Smart meter data from the Glowmarkt API typically has a 24-48 hour delay. The sensors show the most recent available data, which may not be real-time.
+**Important**: Smart meter data from the Glowmarkt API typically has a 24-48 hour delay, so the sensors and Energy dashboard will always be a day or two behind, not real-time. Once data arrives, this fork imports its real hour-by-hour breakdown (plus a one-time backfill of the last 7 days on first install), so the historical shape on the Energy dashboard is accurate even though it's not live.
 
 For near real-time data, consider using a Glow CAD/IHD device with local MQTT.
 
