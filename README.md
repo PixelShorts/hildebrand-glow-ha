@@ -7,11 +7,12 @@ A Home Assistant custom integration for UK SMETS2 smart meters using the Hildebr
 
 ## About this fork
 
-This is a fork of [McDon22/hildebrand-glow-ha](https://github.com/McDon22/hildebrand-glow-ha) with three fixes to how the integration reports data to the Energy dashboard (also submitted upstream as [PR #12](https://github.com/McDon22/hildebrand-glow-ha/pull/12)):
+This is a fork of [McDon22/hildebrand-glow-ha](https://github.com/McDon22/hildebrand-glow-ha) with fixes to how the integration reports data to the Energy dashboard (also submitted upstream as [PR #12](https://github.com/McDon22/hildebrand-glow-ha/pull/12)):
 
 1. **"No data" / permanently zero sensors** -- the integration only ever queried "today", which Glowmarkt's API never has real data for (it has a documented ~24-48h processing delay). Now walks back to the most recent day that actually has data.
 2. **Energy dashboard silently undercounting usage** -- the consumption sensors used `state_class: total_increasing` against a value that isn't a real running total, which could under-report multi-day totals. Now backed by a genuine persisted cumulative counter.
-3. **Each day shown as one artificial spike instead of its real hourly shape** -- the dashboard's hourly chart now gets real hour-by-hour usage (Glowmarkt already provides 30-minute interval data), including a one-time backfill of the last 7 days on first install.
+3. **Each day shown as one artificial spike instead of its real hourly shape** -- the dashboard's hourly chart now gets real hour-by-hour usage (Glowmarkt already provides 30-minute interval data).
+4. **Full history backfill on first install** -- on first setup, this fork automatically discovers how far back your account actually has real data (varies per account -- some meters have years, others just a couple of weeks) and imports its accurate hour-by-hour breakdown, so your Energy dashboard history looks right immediately instead of only building up from install day onward. This runs in the background and never blocks Home Assistant's startup.
 
 If you just want the stock integration, use the [upstream repo](https://github.com/McDon22/hildebrand-glow-ha) instead.
 
