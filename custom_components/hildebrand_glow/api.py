@@ -158,7 +158,16 @@ class GlowmarktApiClient:
                 )
 
                 if data.get("status") == "OK" and data.get("data"):
-                    valid = [r for r in data["data"] if r[1] is not None]
+                    # The API's `to` bound is inclusive -- it returns a reading
+                    # dated exactly at `to` (the *next* day's own first interval)
+                    # in addition to the 48 half-hours from `from`. Left
+                    # unfiltered, that reading gets counted once here and again
+                    # when the next day is fetched on its own turn, doubling
+                    # whichever hour it lands in (confirmed by fetching two
+                    # consecutive days directly and comparing: identical
+                    # epoch+value pair present in both responses).
+                    day_end_ts = day_end_utc.timestamp()
+                    valid = [r for r in data["data"] if r[1] is not None and r[0] < day_end_ts]
                     # Log each reading for debugging
                     for reading in valid[-5:]:  # Log last 5 readings
                         ts = datetime.fromtimestamp(reading[0], tz=UK_TZ).strftime("%Y-%m-%d %H:%M")
