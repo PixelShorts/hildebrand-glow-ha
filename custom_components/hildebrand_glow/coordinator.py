@@ -5,12 +5,13 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from homeassistant.components.recorder.models import StatisticData, StatisticMeanType, StatisticMetaData
-from homeassistant.components.recorder.statistics import async_import_statistics
+from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.statistics import async_import_statistics, statistics_during_period
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
-from .api import DailyReading, GlowmarktApiClient, GlowmarktApiError, GlowmarktAuthError
+from .api import UK_TZ, DailyReading, GlowmarktApiClient, GlowmarktApiError, GlowmarktAuthError
 from .const import DOMAIN, DEFAULT_SCAN_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
@@ -21,6 +22,12 @@ _LOGGER = logging.getLogger(__name__)
 # persisted running counter (see _accumulate), not the raw daily value.
 CUMULATIVE_CLASSIFIERS = ("electricity.consumption", "gas.consumption")
 CUMULATIVE_STORAGE_VERSION = 1
+# Every poll makes sure each of the last RECENT_DAYS complete (UK-local) days is
+# in the statistics, so a day whose fetch failed or arrived late is picked up on
+# a later poll. The last RECENT_RECHECK_DAYS are also re-read about once an hour,
+# so a day that was only partly there when first imported gets corrected.
+RECENT_DAYS = 14
+RECENT_RECHECK_DAYS = 3
 
 class GlowmarktDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Class to manage fetching Glowmarkt data."""
@@ -36,6 +43,7 @@ class GlowmarktDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cumulative: dict[str, Any] | None = None
         self._cumulative_lock = asyncio.Lock()
         self._backfill_started = False
+        self._last_recent_check: datetime | None = None
 
     def _entity_id_for(self, classifier: str) -> str | None:
         registry = er.async_get(self.hass)
@@ -109,6 +117,69 @@ class GlowmarktDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._cumulative[classifier] = {"day": reading.day, "cumulative": new_cumulative}
             await self._store.async_save(self._cumulative)
             return new_cumulative
+
+    async def _recorded_sum_before(self, entity_id: str, when: datetime) -> float | None:
+        """The statistics' running `sum` at the last hour before `when`, or None
+        if there is none -- the baseline a re-imported day has to continue from.
+        """
+        rows = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period, self.hass, when - timedelta(days=7), when, {entity_id}, "hour", None, {"sum"}
+        )
+        for row in reversed(rows.get(entity_id) or []):
+            if row.get("sum") is not None:
+                return float(row["sum"])
+        return None
+
+    async def _sync_recent_days(self, classifier: str, recheck: bool) -> None:
+        """Import each of the last RECENT_DAYS days that is missing (or, about
+        once an hour, each of the last RECENT_RECHECK_DAYS), oldest first.
+
+        A day whose fetch fails is not marked as done, so a later poll tries it
+        again instead of the day being skipped for good. Once one day is
+        (re)imported, every later day in the window is re-imported after it, so
+        the statistics' running sum stays continuous; the first one starts from
+        the sum the recorder already holds at that day's start, so nothing is
+        counted twice.
+        """
+        resource = self._resources.get(classifier)
+        entity_id = self._entity_id_for(classifier)
+        if resource is None or entity_id is None:
+            return
+        async with self._cumulative_lock:
+            if self._cumulative is None:
+                self._cumulative = await self._store.async_load() or {}
+            days: dict[str, float] = self._cumulative.setdefault(f"{classifier}_days", {})
+
+            today_uk = datetime.now(UK_TZ).date()
+            window = [today_uk - timedelta(days=back) for back in range(RECENT_DAYS, 0, -1)]
+
+            first = next((i for i, day in enumerate(window)
+                          if day.isoformat() not in days or (recheck and (today_uk - day).days <= RECENT_RECHECK_DAYS)), None)
+            if first is None:
+                return
+
+            first_start = datetime(window[first].year, window[first].month, window[first].day, tzinfo=UK_TZ).astimezone(timezone.utc)
+            running = await self._recorded_sum_before(entity_id, first_start)
+            if running is None:
+                running = self._cumulative.get(classifier, {}).get("cumulative", 0.0)
+
+            imported = []
+            for day in window[first:]:
+                reading = await self.api_client.get_day_reading(resource["resource_id"], day)
+                if reading is None:
+                    _LOGGER.debug("%s: no data for %s yet (or the fetch failed); will try again", classifier, day)
+                    continue
+                running = self._import_hourly_statistics(entity_id, reading, running)
+                days[day.isoformat()] = running
+                imported.append(day.isoformat())
+
+            if imported:
+                # forget days that have dropped out of the window
+                for old in [d for d in days if d < window[0].isoformat()]:
+                    del days[old]
+                self._cumulative[classifier] = {"day": imported[-1], "cumulative": running}
+                await self._store.async_save(self._cumulative)
+                _LOGGER.debug("%s: imported %s", classifier, ", ".join(imported))
 
     async def _async_backfill_history(self) -> None:
         """One-time import of every available day of real hourly data, so
@@ -200,11 +271,13 @@ class GlowmarktDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
             values = {k: (r.value if r is not None else None) for k, r in merged_readings.items()}
             cumulative_readings: dict[str, float | None] = {}
+            now = datetime.now(timezone.utc)
+            recheck = self._last_recent_check is None or (now - self._last_recent_check) > timedelta(hours=1)
+            if recheck:
+                self._last_recent_check = now
             for classifier in CUMULATIVE_CLASSIFIERS:
-                reading = merged_readings.get(classifier)
-                cumulative_readings[classifier] = (
-                    await self._accumulate(classifier, reading) if reading is not None else None
-                )
+                await self._sync_recent_days(classifier, recheck)
+                cumulative_readings[classifier] = (self._cumulative or {}).get(classifier, {}).get("cumulative")
 
             data: dict[str, Any] = {"readings": values, "cumulative_readings": cumulative_readings, "resources": self._resources, "costs": {}}
 

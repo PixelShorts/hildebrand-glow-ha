@@ -190,6 +190,16 @@ class GlowmarktApiClient:
             _LOGGER.error("Failed to get reading for %s (%s): %s", resource_id, day_start_uk.date(), err)
         return None
 
+    async def get_day_reading(self, resource_id: str, day) -> DailyReading | None:
+        """One whole UK-local day (a `date`) of real 30-minute data, or None if
+        it isn't available yet or the fetch failed. Callers retry later, so a
+        transient error (e.g. "Server disconnected") never loses a day for good.
+        """
+        await self._ensure_authenticated()
+        day_start_uk = datetime(day.year, day.month, day.day, tzinfo=UK_TZ)
+        day_end_uk = day_start_uk + timedelta(days=1)      # wall-clock arithmetic: the next local midnight
+        return await self._fetch_day_reading(resource_id, day_start_uk, day_end_uk)
+
     async def get_daily_reading(self, resource_id: str) -> DailyReading | None:
         """Get the most recent complete day's reading by fetching 30-min
         intervals and summing them.

@@ -48,12 +48,17 @@ class HildebrandGlowConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> HildebrandGlowOptionsFlow:
-        return HildebrandGlowOptionsFlow(config_entry)
+        # No config_entry argument: the base OptionsFlow's config_entry is
+        # now set automatically by the flow manager after construction, not
+        # passed into __init__ -- matching the fix in the class below.
+        return HildebrandGlowOptionsFlow()
 
 class HildebrandGlowOptionsFlow(config_entries.OptionsFlow):
     """Handle options flow for Hildebrand Glow."""
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+    # No __init__ override: recent HA core versions make config_entry a
+    # read-only property set automatically by the base OptionsFlow class --
+    # manually assigning self.config_entry (as this integration used to)
+    # now raises, since it's no longer a plain settable attribute.
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
